@@ -1,0 +1,1 @@
+python -m ipdb main/run_lig.py --input_ply ArteryObjAN1.ply --output_ply test.ply

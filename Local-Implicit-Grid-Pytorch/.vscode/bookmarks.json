@@ -1,0 +1,39 @@
+{
+	"files": [
+		{
+			"path": "pipelines/lig/models/layers.py",
+			"bookmarks": [
+				{
+					"line": 66,
+					"column": 11,
+					"label": ""
+				}
+			]
+		},
+		{
+			"path": "pipelines/lig/models/optimizer.py",
+			"bookmarks": [
+				{
+					"line": 80,
+					"column": 24,
+					"label": ""
+				},
+				{
+					"line": 109,
+					"column": 32,
+					"label": ""
+				}
+			]
+		},
+		{
+			"path": "pipelines/lig/models/__init__.py",
+			"bookmarks": [
+				{
+					"line": 53,
+					"column": 7,
+					"label": ""
+				}
+			]
+		}
+	]
+}

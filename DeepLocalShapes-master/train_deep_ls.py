@@ -375,14 +375,15 @@ def main_function(experiment_directory, continue_from, batch_split):
 
     with open(train_split_file, "r") as f:
         train_split = json.load(f)
-
+    
+    # !!! dataset pre_load
     sdf_dataset = deep_ls.data.SDFSamples(
         data_source, train_split, num_samp_per_scene, load_ram=False
     )
 
     num_data_loader_threads = get_spec_with_default(specs, "DataLoaderThreads", 1)
     logging.debug("loading data with {} threads".format(num_data_loader_threads))
-
+    # !!! data loader
     sdf_loader = data_utils.DataLoader(
         sdf_dataset,
         batch_size=scene_per_batch,

@@ -1,0 +1,2 @@
+python preprocess_data_intra.py --data_dir /root/autodl-tmp/dataset/processed_intra --source  /root/autodl-tmp/dataset/intra
+./bin/SampleVisibleMeshSurface -m /root/autodl-tmp/dataset/intra/complete/ArteryObjAN195.obj -o /root/autodl-tmp/dataset/processed_intra/SdfSamples/complete/ArteryObjAN195.npz

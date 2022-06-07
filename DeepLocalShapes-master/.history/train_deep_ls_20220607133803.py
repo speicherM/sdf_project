@@ -250,7 +250,7 @@ def trainer(center_point, sdf_tree, sdf_grid_radius, lat_vecs, sdf_data, indices
     inner_sum = 0.0
     # -> center_point = (index,(1,3))
     # Get all indices of the samples that are within the L-radius around the cell center.
-    near_sample_indices = sdf_tree.query_ball_point(x=[center_point[1]], r=sdf_grid_radius, p=np.inf) # -> Minkowski norm
+    near_sample_indices = sdf_tree.query_ball_point(x=[center_point[1]], r=sdf_grid_radius, p=np.inf) # -> Minkowski 
     
     # Get number of samples located within the L-radius around the cell center
     num_sdf_samples = len(near_sample_indices[0])
@@ -259,7 +259,7 @@ def trainer(center_point, sdf_tree, sdf_grid_radius, lat_vecs, sdf_data, indices
     
     # Extract code from lat_vecs
     code = lat_vecs((center_point[0] + indices[0].cuda() * (cube_size**3)).long()).cuda()
-    # -> indices[0] represent the first shape in this batches, center_point[0] represent the 
+    
     # Get groundtruth sdf value
     sdf_gt = sdf_data[near_sample_indices[0], 3].unsqueeze(1)
     sdf_gt = torch.tanh(sdf_gt) # -> map the SDF GT to -1~1

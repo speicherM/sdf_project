@@ -259,7 +259,7 @@ def trainer(center_point, sdf_tree, sdf_grid_radius, lat_vecs, sdf_data, indices
     
     # Extract code from lat_vecs
     code = lat_vecs((center_point[0] + indices[0].cuda() * (cube_size**3)).long()).cuda()
-    # -> indices[0] represent the first shape in this batches, center_point[0] represent the 
+    # -> indices[0] represent the first shape of 
     # Get groundtruth sdf value
     sdf_gt = sdf_data[near_sample_indices[0], 3].unsqueeze(1)
     sdf_gt = torch.tanh(sdf_gt) # -> map the SDF GT to -1~1

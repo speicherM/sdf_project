@@ -248,21 +248,21 @@ def append_parameter_magnitudes(param_mag_log, model):
 
 def trainer(center_point, sdf_tree, sdf_grid_radius, lat_vecs, sdf_data, indices, cube_size, outer_sum, outer_lock, decoder, loss_l1, do_code_regularization, code_reg_lambda, epoch):
     inner_sum = 0.0
-    # -> center_point = (index,(1,3))
+    # -> center_point = shape
     # Get all indices of the samples that are within the L-radius around the cell center.
-    near_sample_indices = sdf_tree.query_ball_point(x=[center_point[1]], r=sdf_grid_radius, p=np.inf) # -> Minkowski norm
+    near_sample_indices = sdf_tree.query_ball_point(x=[center_point[1]], r=sdf_grid_radius, p=np.inf) 
     
     # Get number of samples located within the L-radius around the cell center
     num_sdf_samples = len(near_sample_indices[0])
-    if num_sdf_samples < 1:
+    if num_sdf_samples < 1: 
        return
     
     # Extract code from lat_vecs
     code = lat_vecs((center_point[0] + indices[0].cuda() * (cube_size**3)).long()).cuda()
-    # -> indices[0] represent the first shape in this batches, center_point[0] represent the 
+    
     # Get groundtruth sdf value
     sdf_gt = sdf_data[near_sample_indices[0], 3].unsqueeze(1)
-    sdf_gt = torch.tanh(sdf_gt) # -> map the SDF GT to -1~1
+    sdf_gt = torch.tanh(sdf_gt)
     
     transformed_sample = sdf_data[near_sample_indices[0], :3] - center_point[1]
     transformed_sample.requires_grad = False
@@ -512,15 +512,15 @@ def main_function(experiment_directory, continue_from, batch_split):
         len_data_loader = len(sdf_loader)
 
 
-        for sdf_data, indices in sdf_loader: # -> indices is the batch index which is the list of index
+        for sdf_data, indices in sdf_loader:
             current_scene += 1
             #logging.info("Scene: {}/{}".format(current_scene, len_data_loader))
             # sdf_data contains the KDTree of the current scene and all the points in that scene
             # indices is the index of the npz file -> the scene.
             sdf_data = sdf_data.reshape(-1, 4)
-
+            
             sdf_data.requires_grad = False
-
+        
             xyz = sdf_data[:,:3]
             num_sdf_samples_total = sdf_data.shape[0]
 
@@ -531,14 +531,14 @@ def main_function(experiment_directory, continue_from, batch_split):
             outer_sum = 0.0
 
             optimizer_all.zero_grad()
-
-            if __name__ == '__main__':
+              
+            if __name__ == '__main__': 
                 # Shared value counter and lock
                 mp.set_start_method('spawn', force=True)
                 manager = mp.Manager()
                 outer_sum = manager.Value('f', 0)
                 outer_lock = manager.Lock()
-
+                
                 # Create Pool for multiprocessing
                 start = time.time()
                 pool = mp.Pool()
@@ -558,7 +558,7 @@ def main_function(experiment_directory, continue_from, batch_split):
                                 do_code_regularization = do_code_regularization,
                                 code_reg_lambda = code_reg_lambda,
                                 epoch = epoch),
-                                enumerate(sdf_grid_indices)) # -> enumerate would return a tuple .so the center_point =(i,(1,3))
+                                enumerate(sdf_grid_indices)) # -> enumerate would return a tuple .so the center_point =(i,point_size,3)
 
                 pool.close()
                 pool.join()
@@ -571,7 +571,7 @@ def main_function(experiment_directory, continue_from, batch_split):
             loss_log.append(outer_sum.value)
 
             optimizer_all.step()
-
+                    
         logging.info("Epoch scene average loss: {}".format((scene_avg_loss/current_scene)))
         end = time.time()
         seconds_elapsed = end - start

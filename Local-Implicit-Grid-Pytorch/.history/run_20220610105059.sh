@@ -1,0 +1,1 @@
+python main/run_lig.py --input_ply chair --output_ply test.ply

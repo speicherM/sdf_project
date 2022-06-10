@@ -14,8 +14,18 @@
 			"path": "pipelines/lig/models/optimizer.py",
 			"bookmarks": [
 				{
+					"line": 45,
+					"column": 22,
+					"label": ""
+				},
+				{
 					"line": 80,
 					"column": 24,
+					"label": ""
+				},
+				{
+					"line": 86,
+					"column": 18,
 					"label": ""
 				},
 				{

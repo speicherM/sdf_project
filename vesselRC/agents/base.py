@@ -2,7 +2,7 @@
 The Base Agent class, where all other agents inherit from, that contains definitions for all the necessary functions
 """
 import logging
-
+import datetime
 
 class BaseAgent:
     """
@@ -10,7 +10,7 @@ class BaseAgent:
     """
 
     def __init__(self, config):
-        self.config = config
+        
         self.logger = logging.getLogger("Agent")
 
     def load_checkpoint(self, file_name):

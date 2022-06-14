@@ -1,0 +1,1 @@
+python data_process.py --source F:/dataset/intrA/row_data/IntrA --data_dir F:/dataset/intrA/processed_data/

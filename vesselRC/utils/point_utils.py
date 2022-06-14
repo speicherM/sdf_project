@@ -120,7 +120,7 @@ def np_shifted_crop(v, idx_grid, shift, crop_size, ntarget):
     # translate to global grid index
     point_grid_idx = np_gather_ijk_index(idx_grid, point_grid_idx)
     # -> convert grid index (i,j,k) to grid index i
-    
+
     # todo for assign the points to grid
     vall = vall[valid_mask]
     point_idxs = point_idxs[valid_mask]

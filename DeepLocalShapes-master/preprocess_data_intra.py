@@ -47,11 +47,7 @@ def filter_classes(patterns, classes):
 
 
 def process_mesh(mesh_filepath, target_filepath, executable, additional_args):
-    print(mesh_filepath + " --> " + target_filepath)
-    command = [executable, "-m", mesh_filepath, "-o", target_filepath] + additional_args
-
-    subproc = subprocess.Popen(command, stdout=subprocess.DEVNULL)
-    subproc.wait()
+   pass
 
 
 def append_data_source_map(data_dir, name, source):

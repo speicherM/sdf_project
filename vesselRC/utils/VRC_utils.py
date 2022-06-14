@@ -8,7 +8,6 @@ import ipdb
 
 def read_point_ply(filename):
     """Load point cloud from ply file.
-
     Args:
       filename: str, filename for ply file to load.
     Returns:

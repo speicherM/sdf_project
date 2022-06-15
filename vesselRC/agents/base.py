@@ -3,6 +3,15 @@ The Base Agent class, where all other agents inherit from, that contains definit
 """
 import logging
 import datetime
+from torch import nn
+class GatherModel(nn.Module):
+    """ImNet layer py-torch implementation."""
+
+    def __init__(self, *arg):
+        super(GatherModel, self).__init__()
+        self.model = [*arg]
+    def forward(self, x):
+        pass
 
 class BaseAgent:
     """

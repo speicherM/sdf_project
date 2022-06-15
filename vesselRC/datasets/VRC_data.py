@@ -23,13 +23,19 @@ class VRC_Dataset(torch.utils.data.Dataset):
         npyfiles = os.listdir(config.data_source)
         self.xmin = (-1.,-1.,-1.)
         self.xmax = (1.,1.,1.)
-        if self.mode == "train":
-            if config.valid_data_random:
+        if self.config.use_min_batch:
+            if self.config.min_batch_random:
                 pass
             else:
-                self.npyfiles = npyfiles#[0:len(npyfiles)//5*4]
+                self.npyfiles = [npyfiles[0]]
         else:
-            pass
+            if self.mode == "train":
+                if config.valid_data_random:
+                    pass
+                else:
+                    self.npyfiles = npyfiles#[0:len(npyfiles)//5*4]
+            else:
+                pass
         self.loaded_data = []
         for f in self.npyfiles:
             f = os.path.join(self.data_source,f)
@@ -56,11 +62,15 @@ class VRC_Dataset(torch.utils.data.Dataset):
             pc,
             xmin = self.xmin,
             xmax = self.xmax,
-            crop_size=self.config.crop_size,
-            ntarget=self.config.ntarget,  # we do not require `point_crops` (i.e. `_` in returns), so we set it to 1
-            overlap=True,
-            normalize_crops=self.config.normalize_crops,
+            crop_size = self.config.part_size,
+            ntarget = self.config.ntarget,  # we do not require `point_crops` (i.e. `_` in returns), so we set it to 1
+            overlap = self.config.overlap,
+            normalize_crops = self.config.normalize_crops,
             return_shape=True)
+        grid_points = torch.tensor(grid_points)
+        occ_idx = torch.tensor(occ_idx)
+        grid_shape = torch.tensor(grid_shape)
+        sdf_points = torch.tensor(sdf_points)
         return grid_points,occ_idx,grid_shape,sdf_points
 
 class VRC_DataLoader:
@@ -80,10 +90,10 @@ class VRC_DataLoader:
         b_grid_shape = []
         b_sdf_points = []
         for data in datas:
-            b_grid_points.append(torch.tensor(data[0]))
-            b_occ_idx.append(torch.tensor(data[1]))
-            b_grid_shape.append(torch.tensor(data[2]))
-            b_sdf_points.append(torch.tensor(data[3]))
+            b_grid_points.append(data[0])
+            b_occ_idx.append(data[1])
+            b_grid_shape = data[2]
+            b_sdf_points.append(data[3])
         return b_grid_points, b_occ_idx, b_grid_shape, b_sdf_points
     def finalize(self):
         pass

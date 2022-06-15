@@ -10,7 +10,7 @@ import torch
 from torch import nn
 from torch.backends import cudnn
 from torch.autograd import Variable
-
+from tensorboardX import SummaryWriter
 from agents.base import BaseAgent
 from datasets import VRC_data
 from utils.train_utils import adjust_learning_rate
@@ -18,6 +18,9 @@ from graphs.models import VRC_model
 from tqdm  import tqdm
 from skimage import measure
 import trimesh
+import os
+import utils
+
 cudnn.benchmark = True
 
 class VRCAgent(BaseAgent):
@@ -29,8 +32,9 @@ class VRCAgent(BaseAgent):
         # occpany decoder
         self.decoder = VRC_model.Decoder(config)
         # model gather
-        self.model =[self.encoder,self.decoder]
-
+        #self.model =[self.encoder,self.decoder]
+        self.model = nn.Sequential(self.encoder,self.decoder)
+        
         # Create instance from the loss
         # [T] self.loss = CrossEntropyLoss()
         self.loss_fn = nn.BCEWithLogitsLoss(reduction='none')
@@ -43,7 +47,9 @@ class VRCAgent(BaseAgent):
 
         # data_loader
         self.data_loader = VRC_data.VRC_DataLoader(self.config)
-
+        #dataset
+        self.dataset = self.data_loader.dataset
+        
         # initialize my counters
         self.current_epoch = 0
         self.current_iteration = 0
@@ -72,8 +78,12 @@ class VRCAgent(BaseAgent):
             self.load_checkpoint(self.config.checkpoint_file)
 
         # Tensorboard Writer
-        #self.summary_writer = SummaryWriter(log_dir=self.config.summary_dir, comment='CondenseNet')
-
+        self.summary_writer = SummaryWriter(log_dir=self.config.summary_dir, comment='CondenseNet')
+        
+        # set for macubes
+        self.overlap = self.config.overlap
+        self.conservative = True
+        self.interp = False
     def save_checkpoint(self, filename='checkpoint.pth.tar', is_best=0):
         """
         Saving the latest checkpoint of the training
@@ -89,6 +99,7 @@ class VRCAgent(BaseAgent):
         }
         # Save the state
         torch.save(state, self.config.checkpoint_dir + filename)
+        self.logger.info("save model in " + self.config.checkpoint_dir + filename)
         # If it is the best copy it to another file 'model_best.pth.tar'
         if is_best:
             shutil.copyfile(self.config.checkpoint_dir + filename,
@@ -98,24 +109,27 @@ class VRCAgent(BaseAgent):
 
         filename = self.config.checkpoint_dir + filename
         try:
-            self.logger.info("Loading checkpoint '{}'".format(filename))
-            checkpoint = torch.load(filename)
+            if self.config.use_Localimplicit_decoder_pretrain:
+                pretrained_dict = torch.load(self.config.LocalGrid_pretrian_file)
+                model_dict = self.decoder.state_dict()
+                update_dict = {k[8:] : v for k, v in pretrained_dict.items()}
+                model_dict.update(update_dict)
+                self.decoder.load_state_dict(model_dict)
+                self.logger.info("Checkpoint loaded successfully from '{}'\n"
+                                .format(self.config.LocalGrid_pretrian_file))
+            else:
+                self.logger.info("Loading checkpoint '{}'".format(filename))
+                checkpoint = torch.load(filename)
+                self.current_epoch = checkpoint['epoch']
+                self.current_iteration = checkpoint['iteration']
+                self.model.load_state_dict(checkpoint['state_dict'])
+                self.optimizer.load_state_dict(checkpoint['optimizer'])
 
-            self.current_epoch = checkpoint['epoch']
-            self.current_iteration = checkpoint['iteration']
-            self.model.load_state_dict(checkpoint['state_dict'])
-            self.optimizer.load_state_dict(checkpoint['optimizer'])
-
-            self.logger.info("Checkpoint loaded successfully from '{}' at (epoch {}) at (iteration {})\n"
-                             .format(self.config.checkpoint_dir, checkpoint['epoch'], checkpoint['iteration']))
+                self.logger.info("Checkpoint loaded successfully from '{}' at (epoch {}) at (iteration {})\n"
+                                .format(self.config.checkpoint_dir, checkpoint['epoch'], checkpoint['iteration']))
         except OSError as e:
             self.logger.info("No checkpoint exists from '{}'. Skipping...".format(self.config.checkpoint_dir))
             self.logger.info("**First time to train**")
-            pretrained_dict = torch.load(self.config.LocalGrid_pretrian_file)
-            model_dict = self.decoder.state_dict()
-            update_dict = {k[8:] : v for k, v in pretrained_dict.items()}
-            model_dict.update(update_dict)
-            self.decoder.load_state_dict(model_dict)
 
     def run(self):
         """
@@ -126,7 +140,8 @@ class VRCAgent(BaseAgent):
             if self.config.mode == 'test':
                 self.validate()
             else:
-                self.train()
+                # [t] self.train()
+                self.test_one_data(0,'{}debug.ply'.format('test'))
 
         except KeyboardInterrupt:
             self.logger.info("You have entered CTRL+C.. Wait to finalize")
@@ -143,9 +158,38 @@ class VRCAgent(BaseAgent):
             # is_best = valid_acc > self.best_valid_acc
             # if is_best:
             #     self.best_valid_acc = valid_acc
-            # self.save_checkpoint(is_best=is_best)
+            if epoch %10 == 9:
+                self.save_checkpoint('{}model.pth.tar'.format(epoch), True)
+                self.test_one_data(0,'{}debug.ply'.format(epoch))
 
-
+    def decode(self,grid,pts):
+        if self.model.training:
+            self.interp = False
+        else:
+            self.interp = True
+        lat, weights, xloc = self.grid_interpolation(grid, pts) # pipelines\lig\models\layers.py:67
+        # -> lat:[bs,pt_size,8,latent_size], weights:[bs,pt_size,8],xloc:[bs,pt_size,8,3]
+        # -> xloc is the (x-xc), the local coordinates relate to the local grid
+        # [t] xloc = xloc * self.x_location_max
+        if self.config.method == "linear":
+            input_features = torch.cat([xloc, lat], dim=3)  # bs*npoints*nneighbors*c
+            values = self.decoder(input_features)
+            if self.interp:
+                values = (values * weights.unsqueeze(3)).sum(dim=2)  # bs*npoints*1
+            else:
+                values = (values, weights)
+        else:
+            # nearest neighbor
+            bs, npoints, nneighbors, c = lat.size()
+            nearest_neighbor_idxs = weights.max(dim=2, keepdim=True)[1]
+            lat = torch.gather(lat, dim=2, index=nearest_neighbor_idxs.unsqueeze(3).expand(bs, npoints, 1,
+                                                                                           c))  # bs*npoints*1*c
+            lat = lat.squeeze(2)  # bs*npoints*c
+            xloc = torch.gather(xloc, dim=2, index=nearest_neighbor_idxs.unsqueeze(3).expand(bs, npoints, 1, 3))
+            xloc = xloc.squeeze(2)  # bs*npoints*3
+            input_features = torch.cat([xloc, lat], dim=2)
+            values = self.decoder(input_features)
+        return values
     def train_one_epoch(self):
         """
         One epoch training function
@@ -155,22 +199,13 @@ class VRCAgent(BaseAgent):
         #                   desc="Epoch-{}-".format(self.current_epoch))
         tqdm_batch = self.data_loader.train_loader
         # Set the model to be in training mode
-        self.encoder.train()
-        self.decoder.train()
         # Initialize your average meters
-
+        self.model.train()
         current_batch = 0
         for b_grid_points, b_occ_idx, b_grid_shape, b_sdf_points in tqdm_batch:
-            '''
-                b_grid_points: [bs*[occ_size,config.ntarget,3]] : list
-                b_occ_idx: [bs,occ_size,3]
-                b_grid_shape:[[d,h,w]*bs]
-                b_sdf_points:[bs,sdf_points_size,4] -> 4 : x,y,z,sdf
-            '''
             # convert the data
             # [T] pass
             # encoder the point_cloud
-            
             grid_points_lens =[ len(grid_points) for grid_points in b_grid_points]
             b_grid_points = torch.cat(b_grid_points,dim=0)
             b_grid_points = b_grid_points.to(self.device)
@@ -179,42 +214,49 @@ class VRCAgent(BaseAgent):
             
             # padding the latent_grid with zero_latent
             pre_i = 0
-            b_latent_grid = []
-            b_lat = []
-            b_weights = []
-            b_xloc = []
-            b_sample_sdf_points = []
+            b_latent_grid = None
+            b_sample_sdf_points = None
             for i, gi in enumerate(grid_points_lens):
-                b_latent_grid.append(self.padded_latent(occ_idxs=b_occ_idx[i],occ_latent=b_grid_latent[pre_i:pre_i+gi],grid_shape=b_grid_shape[i]))
-                t_sample_sdf_points = self.sample_sdf_points(b_sdf_points[i], grid_shape = b_grid_shape[i],occ_idxs= b_occ_idx[i])
-                b_sample_sdf_points.append(t_sample_sdf_points.to(self.device))
-                lat, weights, xloc = self.GridInterpolation(b_latent_grid[i].unsqueeze(0), b_sample_sdf_points[i][:,:3].unsqueeze(0))
-                b_lat.append(lat)
-                b_weights.append(weights)
-                b_xloc.append(xloc)
+                if b_latent_grid == None:
+                    b_latent_grid = self.padded_latent(occ_idxs=b_occ_idx[i],occ_latent=b_grid_latent[pre_i:pre_i+gi],grid_shape=b_grid_shape).unsqueeze(0)
+                    b_sample_sdf_points = self.sample_sdf_points(b_sdf_points[i], grid_shape = b_grid_shape,occ_idxs= b_occ_idx[i]).unsqueeze(0)
+                else:
+                    t_latent_grid = self.padded_latent(occ_idxs=b_occ_idx[i],occ_latent=b_grid_latent[pre_i:pre_i+gi],grid_shape=b_grid_shape).unsqueeze(0)
+                    b_latent_grid = torch.cat([b_latent_grid,t_latent_grid],dim=0)
+                    t_sample_sdf_points = self.sample_sdf_points(b_sdf_points[i], grid_shape = b_grid_shape,occ_idxs= b_occ_idx[i]).unsqueeze(0)
+                    b_sample_sdf_points = torch.cat([b_sample_sdf_points,t_sample_sdf_points],dim=0)
                 pre_i = gi
-            if len(grid_points_lens) > 1: # batch_size > 1
-                lat = torch.cat(b_lat,dim=0).to(self.device)
-                xloc = torch.cat(b_xloc,dim=0).to(self.device)
-                input_features = torch.cat([xloc, lat], dim=3)
-                weights = torch.cat(b_weights,dim=0).to(self.device)
-                point_val_samples = torch.cat(b_sample_sdf_points,dim=0)[:,3]
-                point_val_samples = torch.sign(point_val_samples).to(self.device)
-                point_val_samples = (point_val_samples+1)/2  # 0 / 1
-            else:
-                lat = b_lat[0].to(self.device)
-                xloc = b_xloc[0].to(self.device)
-                input_features = torch.cat([xloc, lat], dim=3)
-                weights = b_weights[0].to(self.device)
-                point_val_samples = b_sample_sdf_points[0][:,3]
-                point_val_samples = torch.sign(point_val_samples).to(self.device)
-                point_val_samples = point_val_samples[None,:,None]
-                point_val_samples = (point_val_samples+1)/2  # 0 / 1
+            
+            # if len(grid_points_lens) > 1: # batch_size > 1
+            #     lat = torch.cat(b_lat,dim=0).to(self.device)
+            #     xloc = torch.cat(b_xloc,dim=0).to(self.device)
+            #     input_features = torch.cat([xloc, lat], dim=3)
+            #     weights = torch.cat(b_weights,dim=0).to(self.device)
+            #     point_val_samples = torch.cat(b_sample_sdf_points,dim=0)[:,3]
+            #     point_val_samples = torch.sign(point_val_samples).to(self.device)
+            #     point_val_samples = (point_val_samples+1)/2  # 0 / 1
+            # else:
+            #     lat = b_lat[0].to(self.device)
+            #     xloc = b_xloc[0].to(self.device)
+            #     input_features = torch.cat([xloc, lat], dim=3)
+            #     weights = b_weights[0].to(self.device)
+            #     point_val_samples = b_sample_sdf_points[0][:,3]
+            #     point_val_samples = torch.sign(point_val_samples).to(self.device)
+            #     point_val_samples = point_val_samples[None,:,None]
+            #     point_val_samples = (point_val_samples+1)/2  # 0 / 1
             # decoder the sdf
-            pred = self.decoder(input_features)
+            b_latent_grid = b_latent_grid.to(self.device)
+            b_sample_sdf_points = b_sample_sdf_points.to(self.device)
+            pred , weights = self.decode(b_latent_grid,b_sample_sdf_points[:,:,:3])
             pred_interp = (pred * weights.unsqueeze(3)).sum(dim=2, keepdim=True)
             pred = torch.cat([pred, pred_interp], dim=2)  # 1*npoints*9*1
-            binary_labels = point_val_samples.unsqueeze(2).expand(*pred.size())  # 1*npoints*9*1
+            # sign value
+            point_val_samples = b_sample_sdf_points[:,:,3]
+            point_val_samples = torch.sign(point_val_samples)
+            point_val_samples = (point_val_samples+1)/2  # 0 / 1
+            point_val_samples = point_val_samples[:,:,None,None]
+            
+            binary_labels = point_val_samples.expand(*pred.size())  # 1*npoints*9*1
             pred_flatten = pred.reshape(-1, 1)
             binary_labels = binary_labels.reshape(-1, 1)
             # loss
@@ -224,32 +266,31 @@ class VRCAgent(BaseAgent):
             self.optimizer.step()
             #tqdm_batch.set_description("Processing %s" % loss.item())
             print(loss)
-            # lr = adjust_learning_rate(self.optimizer, self.current_epoch, self.config, batch=current_batch,
-            #                           nBatch=self.data_loader.train_iterations)
-            
-        #     if np.isnan(float(cur_loss.item())):
-        #         raise ValueError('Loss is nan during training...')
-        #     # optimizer
-        #     self.optimizer.zero_grad()
-        #     cur_loss.backward()
-        #     self.optimizer.step()
-
-        #     top1, top5 = cls_accuracy(pred.data, y.data, topk=(1, 5))
-
-        #     epoch_loss.update(cur_loss.item())
-        #     top1_acc.update(top1.item(), x.size(0))
-        #     top5_acc.update(top5.item(), x.size(0))
-
-        #     self.current_iteration += 1
-        #     current_batch += 1
-
-        #     self.summary_writer.add_scalar("epoch/loss", epoch_loss.val, self.current_iteration)
-        #     self.summary_writer.add_scalar("epoch/accuracy", top1_acc.val, self.current_iteration)
-        # tqdm_batch.close()
-
-        # self.logger.info("Training at epoch-" + str(self.current_epoch) + " | " + "loss: " + str(
-        #     epoch_loss.val) + "- Top1 Acc: " + str(top1_acc.val) + "- Top5 Acc: " + str(top5_acc.val))
-        return 
+    def test_one_data(self,idx,output_ply):
+        self.model.eval()
+        xmin=(-1.,-1.,-1.)
+        xmax=(1.,1.,1.)
+        b_grid_points,occ_idx,grid_shape,_ = self.dataset[idx]
+        true_shape = ((np.array(grid_shape) - 1) / (2.0 if self.config.overlap else 1.0)).astype(np.int32)
+        output_grid_shape = list(self.config.res_per_part * true_shape)
+        output_grid, xyz = self.get_eval_grid(xmin=xmin,
+                                              xmax=xmax,
+                                              output_grid_shape=output_grid_shape)
+        occ_mask = self.occ_idx_mask(occ_idx.numpy(), grid_shape.numpy())
+        eval_points, out_mask = self.get_eval_inputs(xyz, xmin, occ_mask)
+        eval_points = torch.from_numpy(eval_points).to(self.device)
+        grid_points = b_grid_points.to(self.device)
+        occ_latent_grid = self.encoder(grid_points)
+        latent_grid = self.padded_latent(occ_idxs=occ_idx,occ_latent=occ_latent_grid, grid_shape= grid_shape).unsqueeze(0)
+        output_grid = self.generate_occ_grid(latent_grid, eval_points, output_grid, out_mask)
+        output_grid = output_grid.reshape(*output_grid_shape)
+        v, f, _, _ = measure.marching_cubes(output_grid, 0.75)  # logits==0.5
+        v *= (self.config.part_size / float(self.config.res_per_part) * (np.array(output_grid.shape, dtype=np.float32) /
+                                                           (np.array(output_grid.shape, dtype=np.float32) - 1)))
+        v += xmin
+        mesh = trimesh.Trimesh(v, f)
+        mesh.export(output_ply)
+        self.logger.info("successfully matching cube the {}-th data, save in {}".format(idx,output_ply))
     def validate(self):
         pass
     def finalize(self):
@@ -392,9 +433,9 @@ class VRCAgent(BaseAgent):
         g_valid = g[mask.ravel()]  # valid grid index
 
         if self.overlap:
-            ijk = np.floor((xyz - xmin) / self.part_size * 2).astype(np.int32)
+            ijk = np.floor((xyz - xmin) / self.config.part_size * 2).astype(np.int32)
         else:
-            ijk = np.floor((xyz - xmin + 0.5 * self.part_size) / self.part_size).astype(np.int32)
+            ijk = np.floor((xyz - xmin + 0.5 * self.config.part_size) / self.config.part_size).astype(np.int32)
         ijk_idx = (ijk[:, 0] * (mask.shape[1] * mask.shape[2]) + ijk[:, 1] * mask.shape[2] + ijk[:, 2])
         out_mask = np.isin(ijk_idx, g_valid)
         eval_points = xyz[out_mask]
@@ -410,47 +451,22 @@ class VRCAgent(BaseAgent):
         Returns:
             output_grid (numpy array): [d*h*w], final output occ grid flattened.
         """
-        interp_old = self.model.interp
-        self.model.interp = True
 
-        split = int(np.ceil(eval_points.shape[0] / self.points_batch))
+        split = int(np.ceil(eval_points.shape[0] / self.config.points_batch))
         occ_val_list = []
         self.model.eval()
         with torch.no_grad():
             for s in range(split):
-                sid = s * self.points_batch
-                eid = min((s + 1) * self.points_batch, eval_points.shape[0])
+                sid = s * self.config.points_batch
+                eid = min((s + 1) * self.config.points_batch, eval_points.shape[0])
                 eval_points_slice = eval_points[sid:eid, :]
-                occ_vals = self.model.decode(latent_grid, eval_points_slice.unsqueeze(0))
+                occ_vals = self.decode(latent_grid, eval_points_slice.unsqueeze(0))
                 occ_vals = occ_vals.squeeze(0).squeeze(1).cpu().numpy()
                 occ_val_list.append(occ_vals)
         occ_vals = np.concatenate(occ_val_list, axis=0)
         output_grid[out_mask] = occ_vals
-
-        self.model.interp = interp_old
         return output_grid
-    def test_one_data(self,idx,output_ply):
-        xmin=(-1.,-1.,-1.)
-        xmax=(1.,1.,1.)
-        grid_points,occ_idx,grid_shape,sdf_points = self.data_loader[idx]
-        true_shape = ((np.array(grid_shape) - 1) / (2.0 if self.overlap else 1.0)).astype(np.int32)
-        output_grid_shape = list(self.config.res_per_part * true_shape)
-        output_grid, xyz = self.get_eval_grid(xmin=xmin,
-                                              xmax=xmax,
-                                              output_grid_shape=output_grid_shape)
-        occ_mask = self.occ_idx_mask(occ_idx, grid_shape)
-        eval_points, out_mask = self.get_eval_inputs(xyz, xmin, occ_mask)
-        eval_points = torch.from_numpy(eval_points).to(self.device)
-        latent_grid = []
-        output_grid = self.generate_occ_grid(latent_grid, eval_points, output_grid, out_mask)
-        output_grid = output_grid.reshape(*output_grid_shape)
-        v, f, _, _ = measure.marching_cubes_lewiner(output_grid, 0)  # logits==0
-        v *= (self.part_size / float(self.res_per_part) * (np.array(output_grid.shape, dtype=np.float32) /
-                                                           (np.array(output_grid.shape, dtype=np.float32) - 1)))
-        v += xmin
-        mesh = trimesh.Trimesh(v, f)
-        mesh.export(output_ply)
-    def GridInterpolation(self,grid,pts,re_empty_grid_point_sdf=False, occ_idxs=None):
+    def grid_interpolation(self,grid,pts):
         bs, npoints, _ = pts.shape
         # xmin = self.xmin.reshape([1, 1, -1])
         # xmax = self.xmax.reshape([1, 1, -1])

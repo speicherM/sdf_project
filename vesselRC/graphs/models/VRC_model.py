@@ -49,6 +49,8 @@ class Decoder(nn.Module):
             x_ = torch.cat([x_, x], dim=-1)
         x_ = self.activ(self.fc4(x_))
         x_ = self.fc5(x_)
+        # @speicher add, comefrom IM-Net decoder
+        #x_ = torch.max(torch.min(x_, x_*0.01+0.99), x_*0.01)
         return x_
 
 class PartFeatSampler(nn.Module):

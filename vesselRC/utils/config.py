@@ -12,9 +12,8 @@ from utils.dirs import create_dirs
 
 
 def setup_logging(log_dir):
-    log_file_format = "%(asctime)s - %(name)s - %(lineno)s %(message)s"
-    log_console_format = "%(lineno)s %(message)s"
-
+    log_file_format = "%(pathname)s - %(lineno)d :%(message)s "
+    log_console_format = "%(pathname)s - %(lineno)d :%(message)s "
     # Main logger
     main_logger = logging.getLogger()
     main_logger.setLevel(logging.INFO)
@@ -24,7 +23,7 @@ def setup_logging(log_dir):
     console_handler.setFormatter(Formatter(log_console_format))
 
     exp_file_handler = RotatingFileHandler('{}'.format(log_dir) + str(datetime.datetime.now()) + 'exp_debug.log', maxBytes=10**6, backupCount=5)
-    exp_file_handler.setLevel(logging.DEBUG)
+    exp_file_handler.setLevel(logging.INFO)
     exp_file_handler.setFormatter(Formatter(log_file_format))
 
     exp_errors_file_handler = RotatingFileHandler('{}'.format(log_dir) + str(datetime.datetime.now()) + 'exp_error.log', maxBytes=10**6, backupCount=5)

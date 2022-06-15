@@ -1,0 +1,1 @@
+python -m ipdb  main.py configs/vrc_exp_0.json

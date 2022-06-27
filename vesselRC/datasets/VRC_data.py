@@ -27,17 +27,17 @@ class VRC_Dataset(torch.utils.data.Dataset):
             if self.config.min_batch_random:
                 pass
             else:
-                self.npyfiles = [npyfiles[0]]
+                self.filesname = [npyfiles[0]]
         else:
             if self.mode == "train":
                 if config.valid_data_random:
                     pass
                 else:
-                    self.npyfiles = npyfiles#[0:len(npyfiles)//5*4]
+                    self.filesname = npyfiles#[0:len(npyfiles)//5*4]
             else:
                 pass
         self.loaded_data = []
-        for f in self.npyfiles:
+        for f in self.filesname:
             f = os.path.join(self.data_source,f)
             #sdf_and_pc = np.load(f, allow_pickle=True)
             self.loaded_data.append(f)

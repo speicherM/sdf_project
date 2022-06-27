@@ -11,21 +11,6 @@
 			]
 		},
 		{
-			"path": "agents/vrc.py",
-			"bookmarks": [
-				{
-					"line": 169,
-					"column": 52,
-					"label": ""
-				},
-				{
-					"line": 201,
-					"column": 26,
-					"label": ""
-				}
-			]
-		},
-		{
 			"path": "datasets/VRC_data.py",
 			"bookmarks": [
 				{

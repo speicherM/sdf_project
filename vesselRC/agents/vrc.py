@@ -1,6 +1,8 @@
 """
 Main Agent for CondenseNet
 """
+from copy import copy
+from errno import ESTALE
 import numpy as np
 
 from tqdm import tqdm
@@ -20,36 +22,55 @@ from skimage import measure
 import trimesh
 import os
 import utils
-
+import copy
+from utils  import general_loss as gnl
 cudnn.benchmark = True
 
 class VRCAgent(BaseAgent):
     def __init__(self, config):
         super().__init__(config)
         self.config = config
-        # point could encoder
-        self.encoder = VRC_model.Encoder(config)
-        # occpany decoder
-        self.decoder = VRC_model.Decoder(config)
-        # model gather
-        #self.model =[self.encoder,self.decoder]
-        self.model = nn.Sequential(self.encoder,self.decoder)
-        
-        # Create instance from the loss
-        # [T] self.loss = CrossEntropyLoss()
-        self.loss_fn = nn.BCEWithLogitsLoss(reduction='none')
-        # Create instance from the optimizer
-        self.optimizer = torch.optim.Adam([{'params': self.encoder.parameters()},
-                                        {'params':self.decoder.parameters()},],
-                                         lr=self.config.learning_rate,
-                                         betas=(self.config.beta1,self.config.beta2)
-                                         )
-
         # data_loader
         self.data_loader = VRC_data.VRC_DataLoader(self.config)
         #dataset
         self.dataset = self.data_loader.dataset
         
+        if self.config.use_random_grid_latent:
+            self.decoder = VRC_model.Decoder(config)
+            assert len(self.dataset) == 1
+            # model gather
+            #self.model =[self.encoder,self.decoder]
+            self.model = self.decoder
+            self.latent_grid = None 
+        else:
+            
+            # occpany decoder
+            self.decoder = VRC_model.Decoder(config)
+            self.encoder = VRC_model.Encoder(config)
+            # model gather
+            # self.model =[self.encoder,self.decoder]
+            self.model = nn.Sequential(self.encoder,self.decoder)
+            
+            # Create instance from the loss
+            # [T] self.loss = CrossEntropyLoss()
+            # Create instance from the optimizer
+            if self.config.decoder_be_optimized:
+                self.logger.info("initialize the latent with nerual net, with train the IM-Net")
+                self.optimizer = torch.optim.Adam([{'params': self.encoder.parameters()},
+                                                {'params':self.decoder.parameters()},
+                                                ],
+                                                lr=self.config.learning_rate,
+                                                betas=(self.config.beta1,self.config.beta2)
+                                                )
+            else:
+                self.logger.info("initialize the latent with nerual net, without train the IM-Net")
+                self.optimizer = torch.optim.Adam([{'params': self.encoder.parameters()},
+                                                #{'params':self.decoder.parameters()},
+                                                ],
+                                                lr=self.config.learning_rate,
+                                                betas=(self.config.beta1,self.config.beta2)
+                                                )
+        self.loss_fn = nn.BCEWithLogitsLoss(reduction='none')
         # initialize my counters
         self.current_epoch = 0
         self.current_iteration = 0
@@ -69,14 +90,16 @@ class VRCAgent(BaseAgent):
             torch.manual_seed(self.config.seed)
             self.logger.info("Operation will be on *****CPU***** ")
 
-        self.encoder = self.encoder.to(self.device)
-        self.decoder = self.decoder.to(self.device)
+        self.model = self.model.to(self.device)
         #self.loss = self.loss.to(self.device)
         # Model Loading from the latest checkpoint if not found start from scratch.
 
         if self.config.use_pre_trian:
             self.load_checkpoint(self.config.checkpoint_file)
-
+        if self.config.use_prior_regular:
+            assert self.config.use_pre_trian and self.config.use_Localimplicit_decoder_pretrain
+            self.prior = copy.deepcopy(self.decoder)
+            self.prior = self.prior.to(self.device)
         # Tensorboard Writer
         self.summary_writer = SummaryWriter(log_dir=self.config.summary_dir, comment='CondenseNet')
         
@@ -104,6 +127,7 @@ class VRCAgent(BaseAgent):
         if is_best:
             shutil.copyfile(self.config.checkpoint_dir + filename,
                             self.config.checkpoint_dir + 'model_best.pth.tar')
+            self.logger.info("save model in " + self.config.checkpoint_dir + filename)
 
     def load_checkpoint(self, filename):
 
@@ -140,8 +164,8 @@ class VRCAgent(BaseAgent):
             if self.config.mode == 'test':
                 self.validate()
             else:
-                # [t] self.train()
-                self.test_one_data(0,'{}debug.ply'.format('test'))
+                self.train()
+                # [T] self.test_one_data(0,'{}debug.ply'.format('test'))
 
         except KeyboardInterrupt:
             self.logger.info("You have entered CTRL+C.. Wait to finalize")
@@ -159,7 +183,7 @@ class VRCAgent(BaseAgent):
             # if is_best:
             #     self.best_valid_acc = valid_acc
             if epoch %10 == 9:
-                self.save_checkpoint('{}model.pth.tar'.format(epoch), True)
+                #self.save_checkpoint('{}model.pth.tar'.format(epoch), True)
                 self.test_one_data(0,'{}debug.ply'.format(epoch))
 
     def decode(self,grid,pts):
@@ -202,6 +226,7 @@ class VRCAgent(BaseAgent):
         # Initialize your average meters
         self.model.train()
         current_batch = 0
+        torch.autograd.set_detect_anomaly(True)
         for b_grid_points, b_occ_idx, b_grid_shape, b_sdf_points in tqdm_batch:
             # convert the data
             # [T] pass
@@ -209,8 +234,49 @@ class VRCAgent(BaseAgent):
             grid_points_lens =[ len(grid_points) for grid_points in b_grid_points]
             b_grid_points = torch.cat(b_grid_points,dim=0)
             b_grid_points = b_grid_points.to(self.device)
-
-            b_grid_latent = self.encoder(b_grid_points) #[bs*occ_size,latent_size]
+            if self.config.use_random_grid_latent:
+                if self.latent_grid !=None:
+                    b_grid_latent = self.latent_grid
+                else:
+                    occ_idxs = b_occ_idx[0].unsqueeze(0)
+                    noccupied = occ_idxs.shape[1] # -> valid crop size
+                    bs = 1
+                    si, sj, sk = b_grid_shape
+                    occ_idxs_flatten = occ_idxs[:, :, 0] * (sj * sk) + occ_idxs[:, :, 1] * sk + occ_idxs[:, :, 2]  # bs*npoints
+                    random_latents = torch.randn(bs, noccupied, self.config.latent_size).type(torch.cuda.FloatTensor) * 0.01
+                    latent_grid = torch.zeros(bs, (si * sj * sk), self.config.latent_size).type(torch.cuda.FloatTensor)
+                    occ_idxs_flatten_expanded = occ_idxs_flatten.unsqueeze(2).expand(bs, noccupied, self.config.latent_size).type(torch.cuda.LongTensor)
+                    latent_grid.scatter_(dim=1, index=occ_idxs_flatten_expanded, src=random_latents)# mix the initial latent and the zero latent
+                    self.latent_grid = latent_grid.reshape(bs, si, sj, sk, self.config.latent_size)
+                    self.latent_grid.requires_grad = True
+                    if self.config.decoder_be_optimized:
+                        self.logger.info("initialize the latent with random mathod,with train the IM-Net")
+                        if not self.config.split_latent_and_decoder_optim:
+                            self.optimizer = torch.optim.Adam([{'params':self.latent_grid},
+                                                    {'params':self.decoder.parameters()},
+                                                    ],
+                                                    lr=self.config.learning_rate,
+                                                    betas=(self.config.beta1,self.config.beta2)
+                                                    )
+                        else:
+                            self.latent_optimizer = torch.optim.Adam([self.latent_grid
+                                                    ],
+                                                    lr=self.config.learning_rate,
+                                                    betas=(self.config.beta1,self.config.beta2)
+                                                    )
+                            self.decoder_optimizer = torch.optim.Adam(self.decoder.parameters(),
+                                                    lr=self.config.learning_rate,
+                                                    betas=(self.config.beta1,self.config.beta2)
+                                                    )
+                    else:
+                        self.logger.info("initialize the latent with random mathod, without train the IM-Net")
+                        self.optimizer = torch.optim.Adam([self.latent_grid],
+                                                    lr=self.config.learning_rate,
+                                                    betas=(self.config.beta1,self.config.beta2)
+                                                    )
+                    b_grid_latent = self.latent_grid
+            else:
+                b_grid_latent = self.encoder(b_grid_points) #[bs*occ_size,latent_size]
             
             # padding the latent_grid with zero_latent
             pre_i = 0
@@ -218,33 +284,19 @@ class VRCAgent(BaseAgent):
             b_sample_sdf_points = None
             for i, gi in enumerate(grid_points_lens):
                 if b_latent_grid == None:
-                    b_latent_grid = self.padded_latent(occ_idxs=b_occ_idx[i],occ_latent=b_grid_latent[pre_i:pre_i+gi],grid_shape=b_grid_shape).unsqueeze(0)
-                    b_sample_sdf_points = self.sample_sdf_points(b_sdf_points[i], grid_shape = b_grid_shape,occ_idxs= b_occ_idx[i]).unsqueeze(0)
+                    if not self.config.use_random_grid_latent:
+                        b_latent_grid = self.padded_latent(occ_idxs=b_occ_idx[i],occ_latent=b_grid_latent[pre_i:pre_i+gi],grid_shape=b_grid_shape).unsqueeze(0)
+                    else:
+                        b_latent_grid = self.latent_grid
+                    b_sample_sdf_points = self.sample_sdf_points(b_sdf_points[i], grid_shape = b_grid_shape,occ_idxs= b_occ_idx[i],
+                                                                 uniform_random_sample_number=self.config.uniform_random_sample_number,
+                                                                 empty_sample_number = self.config.empty_sample_number).unsqueeze(0)
                 else:
                     t_latent_grid = self.padded_latent(occ_idxs=b_occ_idx[i],occ_latent=b_grid_latent[pre_i:pre_i+gi],grid_shape=b_grid_shape).unsqueeze(0)
                     b_latent_grid = torch.cat([b_latent_grid,t_latent_grid],dim=0)
                     t_sample_sdf_points = self.sample_sdf_points(b_sdf_points[i], grid_shape = b_grid_shape,occ_idxs= b_occ_idx[i]).unsqueeze(0)
                     b_sample_sdf_points = torch.cat([b_sample_sdf_points,t_sample_sdf_points],dim=0)
                 pre_i = gi
-            
-            # if len(grid_points_lens) > 1: # batch_size > 1
-            #     lat = torch.cat(b_lat,dim=0).to(self.device)
-            #     xloc = torch.cat(b_xloc,dim=0).to(self.device)
-            #     input_features = torch.cat([xloc, lat], dim=3)
-            #     weights = torch.cat(b_weights,dim=0).to(self.device)
-            #     point_val_samples = torch.cat(b_sample_sdf_points,dim=0)[:,3]
-            #     point_val_samples = torch.sign(point_val_samples).to(self.device)
-            #     point_val_samples = (point_val_samples+1)/2  # 0 / 1
-            # else:
-            #     lat = b_lat[0].to(self.device)
-            #     xloc = b_xloc[0].to(self.device)
-            #     input_features = torch.cat([xloc, lat], dim=3)
-            #     weights = b_weights[0].to(self.device)
-            #     point_val_samples = b_sample_sdf_points[0][:,3]
-            #     point_val_samples = torch.sign(point_val_samples).to(self.device)
-            #     point_val_samples = point_val_samples[None,:,None]
-            #     point_val_samples = (point_val_samples+1)/2  # 0 / 1
-            # decoder the sdf
             b_latent_grid = b_latent_grid.to(self.device)
             b_sample_sdf_points = b_sample_sdf_points.to(self.device)
             pred , weights = self.decode(b_latent_grid,b_sample_sdf_points[:,:,:3])
@@ -259,11 +311,25 @@ class VRCAgent(BaseAgent):
             binary_labels = point_val_samples.expand(*pred.size())  # 1*npoints*9*1
             pred_flatten = pred.reshape(-1, 1)
             binary_labels = binary_labels.reshape(-1, 1)
+            # !!! normal loss
+            all_norm = torch.norm(b_latent_grid, dim=4).reshape(-1)
+            loss_lat = all_norm[torch.abs(all_norm) > 1e-7].mean() * self.config.alpha_lat
             # loss
-            self.optimizer.zero_grad()
-            loss = self.loss_fn(pred_flatten, binary_labels).mean()
+            if self.config.split_latent_and_decoder_optim:
+                self.latent_optimizer.zero_grad()
+                self.decoder_optimizer.zero_grad()
+            else:
+                self.optimizer.zero_grad()
+            loss = self.loss_fn(pred_flatten, binary_labels).mean() + loss_lat
+            if self.config.use_prior_regular and self.current_epoch > 10:
+                loss = loss + 10*gnl.prior_regular(self.prior,self.decoder)
             loss.backward()
-            self.optimizer.step()
+            if self.config.split_latent_and_decoder_optim:
+                self.latent_optimizer.step()
+                if self.config.use_prior_regular and self.current_epoch > 10:
+                    self.decoder_optimizer.step()
+            else:
+                self.optimizer.step()
             #tqdm_batch.set_description("Processing %s" % loss.item())
             print(loss)
     def test_one_data(self,idx,output_ply):
@@ -280,17 +346,23 @@ class VRCAgent(BaseAgent):
         eval_points, out_mask = self.get_eval_inputs(xyz, xmin, occ_mask)
         eval_points = torch.from_numpy(eval_points).to(self.device)
         grid_points = b_grid_points.to(self.device)
-        occ_latent_grid = self.encoder(grid_points)
-        latent_grid = self.padded_latent(occ_idxs=occ_idx,occ_latent=occ_latent_grid, grid_shape= grid_shape).unsqueeze(0)
+
+        if not self.config.use_random_grid_latent:
+            occ_latent_grid = self.encoder(grid_points)
+            latent_grid = self.padded_latent(occ_idxs=occ_idx,occ_latent=occ_latent_grid, grid_shape= grid_shape).unsqueeze(0)
+        else:
+            assert self.latent_grid !=None
+            latent_grid = self.latent_grid
         output_grid = self.generate_occ_grid(latent_grid, eval_points, output_grid, out_mask)
         output_grid = output_grid.reshape(*output_grid_shape)
-        v, f, _, _ = measure.marching_cubes(output_grid, 0.75)  # logits==0.5
+        logits = 0.5
+        v, f, _, _ = measure.marching_cubes(output_grid, logits)  # logits==0.5
         v *= (self.config.part_size / float(self.config.res_per_part) * (np.array(output_grid.shape, dtype=np.float32) /
                                                            (np.array(output_grid.shape, dtype=np.float32) - 1)))
         v += xmin
         mesh = trimesh.Trimesh(v, f)
         mesh.export(output_ply)
-        self.logger.info("successfully matching cube the {}-th data, save in {}".format(idx,output_ply))
+        self.logger.info("successfully matching cube the {}-th data {}, save in {}, the value of isosurface is {}".format(idx, self.dataset.filesname[idx], output_ply,logits))
     def validate(self):
         pass
     def finalize(self):
@@ -330,9 +402,9 @@ class VRCAgent(BaseAgent):
         return sample_pts
     def sample_sdf_points(self,pts,
                         uniform_random_select = False,
-                        uniform_random_sample_number = 10000,
+                        uniform_random_sample_number = 20000,
                         grid_shape=None,occ_idxs=None,
-                        empty_sample_number = 1000):
+                        empty_sample_number = 2000):
         npoints, _ = pts.shape
         if uniform_random_select:
             return self.uniform_sample(pts, uniform_random_sample_number)

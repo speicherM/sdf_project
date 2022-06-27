@@ -12,7 +12,7 @@
   "gpu_device": 0,
   "seed": 1337,
 
-  "part_size": 0.125,
+  "part_size": 0.05,
   "@res_per_part":"crop_size*64",
   "res_per_part":8,
   "?ntarget": "each grid point number",
@@ -49,10 +49,19 @@
   "use_min_batch":true,
   "min_batch_random":false,
   "min_batch":1,
-  "use_Localimplicit_decoder_pretrain":false,
+
+  "use_Localimplicit_decoder_pretrain":true,
   "checkpoint_dir":"pretrained_weights",
   "overlap":true,
   "conservative":false,
   "method":"linear",
-  "points_batch": 20000
+  "points_batch": 20000,
+  "alpha_lat":0.01,
+
+  "use_random_grid_latent":true,
+  "decoder_be_optimized":false,
+  "uniform_random_sample_number":10000,
+  "empty_sample_number":1000,
+  "use_prior_regular":false,
+  "split_latent_and_decoder_optim":false
 }

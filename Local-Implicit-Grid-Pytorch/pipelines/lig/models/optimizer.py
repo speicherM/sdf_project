@@ -37,7 +37,7 @@ class LIGOptimizer(object):
         self.num_optim_samples = num_optim_samples
         self.init_std = init_std
         self.lr = learning_rate
-        self.optim_steps = optim_steps = 1 # !!! for debug
+        self.optim_steps = optim_steps# = 1 # !!! for debug
         self.print_every_n_steps = print_every_n_steps
         self.indep_pt_loss = indep_pt_loss
         self.device = device

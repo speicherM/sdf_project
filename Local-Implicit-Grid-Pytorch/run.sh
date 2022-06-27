@@ -1,1 +1,1 @@
-python -m ipdb main/run_lig.py --input_ply chair.ply --output_ply test.ply
+python main/run_lig.py --input_ply ArteryObjAN116.ply --output_ply test.ply

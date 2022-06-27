@@ -179,7 +179,7 @@ class Generator3D(object):
         output_grid = self.generate_occ_grid(latent_grid, eval_points, output_grid, out_mask)
         output_grid = output_grid.reshape(*output_grid_shape)
 
-        v, f, _, _ = measure.marching_cubes_lewiner(output_grid, 0)  # logits==0
+        v, f, _, _ = measure.marching_cubes(output_grid, 0.5)  # logits==0
         v *= (self.part_size / float(self.res_per_part) * (np.array(output_grid.shape, dtype=np.float32) /
                                                            (np.array(output_grid.shape, dtype=np.float32) - 1)))
         v += xmin
